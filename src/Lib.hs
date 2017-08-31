@@ -61,8 +61,8 @@ libMain = do
       putStrLn ("  Qsub line: " ++ qsub_str)
        
     -- submit the job
-    --pbs_rval <- readCreateProcess (shell qsub_str) []
-    --putStrLn $ pbs_rval
+    pbs_rval <- readCreateProcess (shell qsub_str) []
+    putStrLn $ pbs_rval
 
 -- return user name
 getUserName :: IO String
