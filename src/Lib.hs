@@ -87,10 +87,8 @@ getShareReservations = do
 
 -- return a list of the nodes in an offline state
 getDownNodes :: IO [String]
-getDownNodes = do
-    dn_str <- readCreateProcess (shell "pbsnodes -l") []
-    let downnodes = map rmwhite $ lines dn_str
-    return downnodes
+getDownNodes = readCreateProcess (shell "pbsnodes -l") [] 
+           >>= return . (map rmwhite) . lines
         where rmwhite s = filter (not . isSpace) $ take 10 s 
 
 -- Get the number of this user's jobs on a particular node
@@ -110,9 +108,9 @@ getNodeLoads (n:ns) = getNodeLoad n : getNodeLoads ns
     
 -- extra output when verbose mode enabled
 verboseOut :: [String] -> [String] -> [String] -> [NodeLoad] -> String -> IO ()
-verboseOut sn dn an nl sh = putStrLn ("  Share Nodes: " ++ (show sn)) >>
-      putStrLn ("  Down Nodes: " ++ (show dn))          >>
-      putStrLn ("  Available Nodes: " ++ (show an))    >>
-      putStrLn ("  Node Loads: " ++ (show (sort nl)))    >>
-      putStrLn ("  Submit Job to node: " ++ sh)       
+verboseOut sn dn an nl sh = putStrLn ("  Share Nodes: " ++ (show sn))
+      >> putStrLn ("  Down Nodes: " ++ (show dn))
+      >> putStrLn ("  Available Nodes: " ++ (show an))
+      >> putStrLn ("  Node Loads: " ++ (show (sort nl)))
+      >> putStrLn ("  Submit Job to node: " ++ sh)       
 
