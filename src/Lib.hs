@@ -7,12 +7,12 @@ module Lib
     ) where
 
 import System.Console.CmdArgs
-import System.IO
-import System.Process
-import System.Exit
-import Text.Regex.PCRE.Heavy
-import Data.List
-import Data.Char
+import System.Process (readCreateProcess, readCreateProcessWithExitCode, shell)
+import System.Exit (ExitCode(..))
+import System.Posix.User (getLoginName)
+import Text.Regex.PCRE.Heavy (split, scan, re, (=~))
+import Data.List (nub, sort)
+import Data.Char (isSpace)
 
 --import Numeric.Statistics (average, avgdev)
 
@@ -21,7 +21,6 @@ data Shrsub = Shrsub { file_ :: FilePath
                      } deriving (Data, Typeable, Show, Eq)
 
 shrsub = Shrsub
---         { file_ = "std" &= args &= typ "FILE"
          { file_ = def &= args &= typ "FILE"
          , show_ = def &= name "s" &= help "Show the generated qsub line without submitting."
          } &=
@@ -69,12 +68,6 @@ libMain = do
       pbs_rval <- readCreateProcess (shell qsub_str) []
       putStrLn $ pbs_rval
 
--- return user name
-getUserName :: IO String
-getUserName = do 
-    rval <- readCreateProcess (shell "whoami") ""
-    return $ filter (/= '\n') rval
-
 -- return a list of the nodes in the given reservation
 getShareNodes :: String -> IO [String]
 getShareNodes res = do
@@ -103,7 +96,7 @@ getDownNodes = do
 -- Get the number of this user's jobs on a particular node
 getNodeLoad :: String -> IO NodeLoad
 getNodeLoad node_str = do
-    user_name <- getUserName
+    user_name <- getLoginName
     let cmd_str = "qstat -n -u " ++ user_name ++ " | grep " ++ node_str
     (rval, sout, serr) <- readCreateProcessWithExitCode (shell cmd_str) []
     let njobs = if rval == ExitSuccess then length (lines sout) else 0
