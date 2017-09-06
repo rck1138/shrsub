@@ -10,9 +10,12 @@ import System.Console.CmdArgs
 import System.Process (readCreateProcess, readCreateProcessWithExitCode, shell)
 import System.Exit (ExitCode(..))
 import System.Posix.User (getLoginName)
-import Text.Regex.PCRE.Heavy (split, scan, re, (=~))
-import Data.List (nub, sort)
+import Text.Regex.PCRE.Heavy (split, scan, re, compileM,(=~))
+import Data.List (nub, sort, intersperse)
 import Data.Char (isSpace)
+import Data.ByteString.Char8 (pack)
+import Data.Either.Compat (fromRight)
+import Control.Concurrent (threadDelay) 
 
 --import Numeric.Statistics (average, avgdev)
 
@@ -28,9 +31,8 @@ shrsub = Shrsub
          help "Wrapper for qsub to submit to least used node in share queue" &=
          summary "shrsub v0.0.1" &=
          details ["shrsub is a wrapper for qsub used for submitting jobs to the"
-                 ,"share queue."
-                 ,"The job will be placed on the share node where the user"
-                 ,"has the least number of currently running jobs."]
+                 ,"share queue. The job will be placed on the share node where the"
+                 ,"user has the least number of currently running jobs."]
 
 mode = cmdArgsMode shrsub
 
@@ -45,22 +47,14 @@ instance Ord NodeLoad where
 libMain :: IO ()
 libMain = do
     args <- cmdArgs shrsub
+    loud <- isLoud
     let pbs_script = (file_ args)
     let nosubmit = (show_ args)
-    loud <- isLoud
-    share_nodes <- getShareReservations 
-                >>= (sequence . (map getShareNodes)) 
-                >>= (return . nub . concat)
-    down_nodes <- getDownNodes
-    let avail_nodes = filter (`notElem` down_nodes) share_nodes
-    nodeloads <- sequence $ getNodeLoads avail_nodes
-    --let submit_host = (nodename (head (sort nodeloads))) 
-    let submit_host = (nodename . head . sort) nodeloads
+    submit_host <- numUnassigned >>= targetNode
     let qsub_str = "qsub -l select=host=" ++ submit_host ++ " " ++ pbs_script
 
     -- extra output when verbose mode enabled
-    whenLoud $ verboseOut share_nodes down_nodes avail_nodes 
-                          nodeloads submit_host
+    whenLoud $ verboseOut submit_host
    
     -- print the qsub line or submit the job
     if (nosubmit || loud) then putStrLn ("  Qsub line: " ++ qsub_str) else putStr []
@@ -68,14 +62,28 @@ libMain = do
       pbs_rval <- readCreateProcess (shell qsub_str) []
       putStrLn $ pbs_rval
 
--- return a list of the nodes in the given reservation
-getShareNodes :: String -> IO [String]
-getShareNodes res = do
-    let cmd_str = "pbs_rstat -F " ++ res ++ ".chadmin1"
-    shr_q_info <- readCreateProcess (shell cmd_str) []
-    let node_str = head . filter (\x -> x =~ [re|^resv_nodes|]) $ lines shr_q_info
-    let nodes = filter (\x -> not (x =~ [re|=|])) (split [re|[(:]|] node_str)
-    return nodes
+-- Wait if there are currently unassigned jobs, otherwise return a 
+-- target node to submit the job to
+targetNode :: Int -> IO String
+targetNode 0 = do
+    share_nodes <- getShareNodes
+    down_nodes <- getDownNodes
+    let avail_nodes = filter (`notElem` down_nodes) share_nodes
+    nodeloads <- sequence $ getNodeLoads avail_nodes
+    return $ (nodename . head . sort) nodeloads
+targetNode n = do
+    putStrLn $ " " ++ show n ++ " unassigned share jobs. Retrying."
+    threadDelay 2000000 >> numUnassigned >>= targetNode
+
+-- return the number of unassigned jobs for this user in the share queue
+numUnassigned :: IO Int
+numUnassigned = do
+    user_name <- getLoginName
+    let cmd_str = "qstat -i -u " ++ user_name 
+    shr_q_res <- getShareReservations
+    let res_str = concat $ intersperse "|" shr_q_res
+    let rex = fromRight [re||] $ compileM (pack (res_str)) []
+    readCreateProcess (shell cmd_str) [] >>= return . length . filter (=~ rex) . lines
 
 -- return list of PBS reservation strings being routed to by the share queue
 getShareReservations :: IO [String]
@@ -85,11 +93,27 @@ getShareReservations = do
     let shr_q_res = map fst $ scan [re|R[0-9]+|] res_dest_info
     return shr_q_res
 
+-- return a list of the nodes in the given reservation
+getResNodes :: String -> IO [String]
+getResNodes res = do
+    let cmd_str = "pbs_rstat -F " ++ res ++ ".chadmin1"
+    shr_q_info <- readCreateProcess (shell cmd_str) []
+    let node_str = head . filter (=~ [re|^resv_nodes|]) $ lines shr_q_info
+    --let nodes = filter (\x -> not (x =~ [re|=|])) (split [re|[(:]|] node_str)
+    let nodes = filter (not . (=~ [re|=|])) $ split [re|[(:]|] node_str
+    return nodes
+
+-- get all nodes in all reservations routed to by share queue
+getShareNodes :: IO [String]
+getShareNodes = getShareReservations 
+                >>= (sequence . (map getResNodes)) 
+                >>= (return . nub . concat)
+
 -- return a list of the nodes in an offline state
 getDownNodes :: IO [String]
 getDownNodes = readCreateProcess (shell "pbsnodes -l") [] 
            >>= return . (map rmwhite) . lines
-        where rmwhite s = filter (not . isSpace) $ take 10 s 
+        where rmwhite s = filter (not . isSpace) $ take 10 s
 
 -- Get the number of this user's jobs on a particular node
 getNodeLoad :: String -> IO NodeLoad
@@ -107,10 +131,15 @@ getNodeLoads [] = []
 getNodeLoads (n:ns) = getNodeLoad n : getNodeLoads ns
     
 -- extra output when verbose mode enabled
-verboseOut :: [String] -> [String] -> [String] -> [NodeLoad] -> String -> IO ()
-verboseOut sn dn an nl sh = putStrLn ("  Share Nodes: " ++ (show sn))
-      >> putStrLn ("  Down Nodes: " ++ (show dn))
-      >> putStrLn ("  Available Nodes: " ++ (show an))
-      >> putStrLn ("  Node Loads: " ++ (show (sort nl)))
-      >> putStrLn ("  Submit Job to node: " ++ sh)       
+verboseOut :: String -> IO ()
+verboseOut submit_host = do
+    share_nodes <- getShareNodes
+    down_nodes <- getDownNodes
+    let avail_nodes = filter (`notElem` down_nodes) share_nodes
+    nodeloads <- sequence $ getNodeLoads avail_nodes
+    putStrLn ("  Share Nodes: " ++ (show share_nodes))
+      >> putStrLn ("  Down Nodes: " ++ (show down_nodes))
+      >> putStrLn ("  Available Nodes: " ++ (show avail_nodes))
+      >> putStrLn ("  Node Loads: " ++ (show (sort nodeloads)))
+      >> putStrLn ("  Submit Job to node: " ++ submit_host)       
 
