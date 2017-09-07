@@ -90,8 +90,7 @@ getShareReservations :: IO [String]
 getShareReservations = do
     shr_q_info <- readCreateProcess (shell "qstat -Qf share") []
     let res_dest_info = head . filter (\x -> x =~ [re|^\s+route_destinations|]) $ lines shr_q_info
-    let shr_q_res = map fst $ scan [re|R[0-9]+|] res_dest_info
-    return shr_q_res
+    return . map fst $ scan [re|R[0-9]+|] res_dest_info
 
 -- return a list of the nodes in the given reservation
 getResNodes :: String -> IO [String]
@@ -99,9 +98,7 @@ getResNodes res = do
     let cmd_str = "pbs_rstat -F " ++ res ++ ".chadmin1"
     shr_q_info <- readCreateProcess (shell cmd_str) []
     let node_str = head . filter (=~ [re|^resv_nodes|]) $ lines shr_q_info
-    --let nodes = filter (\x -> not (x =~ [re|=|])) (split [re|[(:]|] node_str)
-    let nodes = filter (not . (=~ [re|=|])) $ split [re|[(:]|] node_str
-    return nodes
+    return . filter (not . (=~ [re|=|])) $ split [re|[(:]|] node_str
 
 -- get all nodes in all reservations routed to by share queue
 getShareNodes :: IO [String]
@@ -121,9 +118,8 @@ getNodeLoad node_str = do
     user_name <- getLoginName
     let cmd_str = "qstat -n -u " ++ user_name ++ " | grep " ++ node_str
     (rval, sout, serr) <- readCreateProcessWithExitCode (shell cmd_str) []
-    let njobs = if rval == ExitSuccess then length (lines sout) else 0
-    let node = NodeLoad { nodename = node_str, nodejobs = njobs }
-    return node
+    let njobs = if rval == ExitSuccess then (length . lines) sout else 0
+    return NodeLoad { nodename = node_str, nodejobs = njobs }
 
 -- Get Node Loads for all nodes in a list
 getNodeLoads :: [String] -> [IO NodeLoad]
